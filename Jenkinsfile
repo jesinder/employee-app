@@ -2,6 +2,7 @@ pipeline {
 
     agent {
         node {
+            label 'built-in'
             customWorkspace '/home/ubuntu/jenkins-workspace/employee_leave'
         }
     }

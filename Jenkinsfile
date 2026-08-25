@@ -34,7 +34,7 @@ pipeline {
                     docker --version
 
                     echo "Docker Compose version:"
-                    docker compose version
+                    docker-compose version
                 '''
             }
         }
@@ -89,7 +89,7 @@ pipeline {
                     echo "       BUILD DOCKER IMAGES"
                     echo "=========================================="
 
-                    docker compose build
+                    docker-compose build
                 '''
             }
         }
@@ -101,15 +101,15 @@ pipeline {
                     echo "       DEPLOY APPLICATION"
                     echo "=========================================="
 
-                    docker compose down --remove-orphans || true
+                    docker-compose down --remove-orphans || true
 
-                    docker compose up -d
+                    docker-compose up -d
 
                     echo "Waiting for containers to start..."
                     sleep 15
 
                     echo "Running containers:"
-                    docker compose ps
+                    docker-compose ps
                 '''
             }
         }
@@ -121,13 +121,13 @@ pipeline {
                     echo "       SMOKE TEST"
                     echo "=========================================="
 
-                    docker compose ps
+                    docker-compose ps
 
-                    if docker compose ps | grep -q "Up"; then
+                    if docker-compose ps | grep -q "Up"; then
                         echo "Application containers are running."
                     else
                         echo "ERROR: Application containers are not running."
-                        docker compose logs --tail=100
+                        docker-compose logs --tail=100
                         exit 1
                     fi
                 '''

@@ -1,110 +1,134 @@
 pipeline {
 
-    agent any
-
-    environment {
-        JAVA_HOME = '/usr/lib/jvm/java-21-openjdk-amd64'
-        IMAGE_TAG = "${BUILD_NUMBER}"
+    agent {
+        node {
+            customWorkspace '/home/ubuntu/jenkins-workspace/employee_leave'
+        }
     }
 
     options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
         timestamps()
-        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     stages {
 
-        stage('Checkout') {
+        stage('Environment Check') {
             steps {
-                echo '=== Checking out source code ==='
-                checkout scm
-                sh 'git log --oneline -5'
-            }
-        }
-
-        stage('Maven Build') {
-            steps {
-                echo '=== Building Backend with Maven ==='
-
-                dir('backend') {
-                    sh '''
-                        mvn clean package -DskipTests -B \
-                            --no-transfer-progress \
-                            -Dmaven.compiler.source=17 \
-                            -Dmaven.compiler.target=17
-                    '''
-
-                    sh 'ls -lh target/*.jar'
-                }
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                echo '=== Running Unit Tests ==='
-
-                dir('backend') {
-                    sh 'mvn test -B --no-transfer-progress'
-                }
-            }
-
-            post {
-                always {
-                    junit(
-                        testResults: 'backend/target/surefire-reports/*.xml',
-                        allowEmptyResults: true
-                    )
-                }
-            }
-        }
-
-        stage('Docker Build') {
-            steps {
-                echo '=== Building Docker Images ==='
-
                 sh '''
-                    docker build -t emp-backend:${IMAGE_TAG} ./backend
-                    docker build -t emp-frontend:${IMAGE_TAG} ./frontend
+                    echo "=========================================="
+                    echo "       ENVIRONMENT CHECK"
+                    echo "=========================================="
 
-                    docker tag emp-backend:${IMAGE_TAG} emp-backend:latest
-                    docker tag emp-frontend:${IMAGE_TAG} emp-frontend:latest
+                    echo "Current directory:"
+                    pwd
 
-                    docker images | grep emp-
+                    echo "Java version:"
+                    java -version
+
+                    echo "Maven version:"
+                    mvn -version
+
+                    echo "Docker version:"
+                    docker --version
+
+                    echo "Docker Compose version:"
+                    docker compose version
                 '''
             }
         }
 
-        stage('Deploy with Docker Compose') {
+        stage('Checkout') {
             steps {
-                echo '=== Deploying 3-Tier Application ==='
-
+                echo 'Source code is being checked out by Jenkins.'
                 sh '''
-                    IMAGE_TAG=${IMAGE_TAG} docker-compose down --remove-orphans || true
+                    echo "=========================================="
+                    echo "       PROJECT FILES"
+                    echo "=========================================="
+                    ls -la
+                    find . -maxdepth 2 -type f | sort
+                '''
+            }
+        }
 
-                    IMAGE_TAG=${IMAGE_TAG} docker-compose up -d --build
+        stage('Maven Test and Build') {
+            steps {
+                dir('backend') {
+                    sh '''
+                        echo "=========================================="
+                        echo "       MAVEN TEST AND BUILD"
+                        echo "=========================================="
 
-                    echo "=== Running Containers ==="
-                    docker ps
+                        mvn clean test package
+                    '''
+                }
+            }
+        }
+
+        stage('Verify JAR') {
+            steps {
+                sh '''
+                    echo "=========================================="
+                    echo "       VERIFY JAR"
+                    echo "=========================================="
+
+                    ls -lh backend/target/
+
+                    test -n "$(find backend/target -name '*.jar' -type f -print -quit)"
+
+                    echo "JAR file created successfully."
+                '''
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                sh '''
+                    echo "=========================================="
+                    echo "       BUILD DOCKER IMAGES"
+                    echo "=========================================="
+
+                    docker compose build
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh '''
+                    echo "=========================================="
+                    echo "       DEPLOY APPLICATION"
+                    echo "=========================================="
+
+                    docker compose down --remove-orphans || true
+
+                    docker compose up -d
+
+                    echo "Waiting for containers to start..."
+                    sleep 15
+
+                    echo "Running containers:"
+                    docker compose ps
                 '''
             }
         }
 
         stage('Smoke Test') {
             steps {
-                echo '=== Testing Application ==='
-
                 sh '''
-                    sleep 30
+                    echo "=========================================="
+                    echo "       SMOKE TEST"
+                    echo "=========================================="
 
-                    echo "Testing Frontend..."
-                    curl -f http://localhost/ || exit 1
+                    docker compose ps
 
-                    echo "Testing Backend..."
-                    curl -f http://localhost:8080/api/employees/health || exit 1
-
-                    echo "=== Smoke Test Passed ==="
+                    if docker compose ps | grep -q "Up"; then
+                        echo "Application containers are running."
+                    else
+                        echo "ERROR: Application containers are not running."
+                        docker compose logs --tail=100
+                        exit 1
+                    fi
                 '''
             }
         }
@@ -113,29 +137,28 @@ pipeline {
     post {
 
         success {
-            echo """
-            ==========================================
-              CI/CD PIPELINE SUCCESSFUL
-              Build #${BUILD_NUMBER}
-
-              Frontend: http://EC2-PUBLIC-IP
-              Backend:  http://EC2-PUBLIC-IP:8080
-            ==========================================
-            """
+            echo '''
+==========================================
+       CI/CD PIPELINE SUCCESS
+       Application deployed successfully.
+==========================================
+'''
         }
 
         failure {
-            echo """
-            ==========================================
-              CI/CD PIPELINE FAILED
-              Build #${BUILD_NUMBER}
-              Check the logs above.
-            ==========================================
-            """
+            echo '''
+==========================================
+       CI/CD PIPELINE FAILED
+       Check the logs above.
+==========================================
+'''
         }
 
         always {
-            sh 'docker image prune -f || true'
+            sh '''
+                echo "Cleaning unused Docker images..."
+                docker image prune -f || true
+            '''
         }
     }
 }

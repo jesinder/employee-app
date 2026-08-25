@@ -67,7 +67,7 @@ services:
     container_name: emp-frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "8082:80"
     networks:
       - emp-network
     depends_on:

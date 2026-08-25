@@ -1,28 +1,12 @@
-// ─────────────────────────────────────────────────────────────────
-//  Employee Management System — CI/CD Pipeline
-//  Team: Jesinder (DevOps) & Menaka (Java)
-//  Stack: Maven → Docker → AWS EC2
-// ─────────────────────────────────────────────────────────────────
-
 pipeline {
 
     agent any
 
-    // ── Environment variables ────────────────────────────────────
     environment {
-        APP_NAME          = 'employee-management'
-        DOCKER_HUB_USER   = credentials('DOCKER_HUB_USERNAME')   // Jenkins credential
-        DOCKER_HUB_PASS   = credentials('DOCKER_HUB_PASSWORD')   // Jenkins credential
-        IMAGE_BACKEND     = "${DOCKER_HUB_USER}/emp-backend"
-        IMAGE_FRONTEND    = "${DOCKER_HUB_USER}/emp-frontend"
-        IMAGE_TAG         = "${env.BUILD_NUMBER}"
-        EC2_HOST          = credentials('EC2_HOST')               // e.g. 54.x.x.x
-        EC2_USER          = 'ubuntu'
-        EC2_KEY           = credentials('EC2_SSH_KEY')            // SSH private key
-        JAVA_HOME         = '/usr/lib/jvm/java-17-openjdk-amd64'
+        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
+        IMAGE_TAG = "${BUILD_NUMBER}"
     }
 
-    // ── Global options ───────────────────────────────────────────
     options {
         buildDiscarder(logRotator(numToKeepStr: '10'))
         timeout(time: 30, unit: 'MINUTES')
@@ -30,11 +14,9 @@ pipeline {
         disableConcurrentBuilds()
     }
 
-    // ── Pipeline stages ──────────────────────────────────────────
     stages {
 
-        // ── Stage 1: Checkout ────────────────────────────────────
-        stage('📥 Checkout') {
+        stage('Checkout') {
             steps {
                 echo '=== Checking out source code ==='
                 checkout scm
@@ -42,10 +24,10 @@ pipeline {
             }
         }
 
-        // ── Stage 2: Build Backend with Maven ────────────────────
-        stage('🔨 Maven Build') {
+        stage('Maven Build') {
             steps {
                 echo '=== Building Backend with Maven ==='
+
                 dir('backend') {
                     sh '''
                         mvn clean package -DskipTests -B \
@@ -53,22 +35,23 @@ pipeline {
                             -Dmaven.compiler.source=17 \
                             -Dmaven.compiler.target=17
                     '''
+
                     sh 'ls -lh target/*.jar'
                 }
             }
         }
 
-        // ── Stage 3: Run Unit Tests ───────────────────────────────
-        stage('🧪 Unit Tests') {
+        stage('Unit Tests') {
             steps {
                 echo '=== Running Unit Tests ==='
+
                 dir('backend') {
                     sh 'mvn test -B --no-transfer-progress'
                 }
             }
+
             post {
                 always {
-                    // Publish JUnit results
                     junit(
                         testResults: 'backend/target/surefire-reports/*.xml',
                         allowEmptyResults: true
@@ -77,154 +60,82 @@ pipeline {
             }
         }
 
-        // ── Stage 4: Build Docker Images ─────────────────────────
-        stage('🐳 Docker Build') {
+        stage('Docker Build') {
             steps {
-                echo '=== Building Docker images ==='
-                sh """
-                    # Build backend image
-                    docker build -t ${IMAGE_BACKEND}:${IMAGE_TAG} \
-                                 -t ${IMAGE_BACKEND}:latest \
-                                 ./backend
+                echo '=== Building Docker Images ==='
 
-                    # Build frontend image
-                    docker build -t ${IMAGE_FRONTEND}:${IMAGE_TAG} \
-                                 -t ${IMAGE_FRONTEND}:latest \
-                                 ./frontend
+                sh '''
+                    docker build -t emp-backend:${IMAGE_TAG} ./backend
+                    docker build -t emp-frontend:${IMAGE_TAG} ./frontend
 
-                    # List built images
+                    docker tag emp-backend:${IMAGE_TAG} emp-backend:latest
+                    docker tag emp-frontend:${IMAGE_TAG} emp-frontend:latest
+
                     docker images | grep emp-
-                """
+                '''
             }
         }
 
-        // ── Stage 5: Push to Docker Hub ───────────────────────────
-        stage('📤 Push to Docker Hub') {
+        stage('Deploy with Docker Compose') {
             steps {
-                echo '=== Pushing images to Docker Hub ==='
-                sh """
-                    echo \${DOCKER_HUB_PASS} | docker login -u \${DOCKER_HUB_USER} --password-stdin
+                echo '=== Deploying 3-Tier Application ==='
 
-                    docker push ${IMAGE_BACKEND}:${IMAGE_TAG}
-                    docker push ${IMAGE_BACKEND}:latest
+                sh '''
+                    IMAGE_TAG=${IMAGE_TAG} docker-compose down --remove-orphans || true
 
-                    docker push ${IMAGE_FRONTEND}:${IMAGE_TAG}
-                    docker push ${IMAGE_FRONTEND}:latest
+                    IMAGE_TAG=${IMAGE_TAG} docker-compose up -d --build
 
-                    docker logout
-                """
+                    echo "=== Running Containers ==="
+                    docker ps
+                '''
             }
         }
 
-        // ── Stage 6: Deploy to AWS EC2 ────────────────────────────
-        stage('🚀 Deploy to EC2') {
+        stage('Smoke Test') {
             steps {
-                echo '=== Deploying to AWS EC2 ==='
-                // Write docker-compose to EC2 and restart
-                sshagent(credentials: ['EC2_SSH_KEY']) {
-                    sh """
-                        # Copy docker-compose file to EC2
-                        scp -o StrictHostKeyChecking=no \
-                            docker-compose.yml \
-                            ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/employee-management/
+                echo '=== Testing Application ==='
 
-                        # Copy .env.example as .env if not exists
-                        scp -o StrictHostKeyChecking=no \
-                            .env.example \
-                            ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/employee-management/.env.example
+                sh '''
+                    sleep 30
 
-                        # SSH into EC2 and deploy
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} '
-                            cd /home/${EC2_USER}/employee-management
+                    echo "Testing Frontend..."
+                    curl -f http://localhost/ || exit 1
 
-                            # Pull latest images
-                            docker pull ${IMAGE_BACKEND}:${IMAGE_TAG}
-                            docker pull ${IMAGE_FRONTEND}:${IMAGE_TAG}
+                    echo "Testing Backend..."
+                    curl -f http://localhost:8080/api/employees/health || exit 1
 
-                            # Update IMAGE_TAG in environment
-                            export IMAGE_TAG=${IMAGE_TAG}
-                            export DOCKER_HUB_USERNAME=${DOCKER_HUB_USER}
-
-                            # Stop existing containers
-                            docker-compose down --remove-orphans || true
-
-                            # Start all services
-                            IMAGE_TAG=${IMAGE_TAG} docker-compose up -d
-
-                            # Wait for health
-                            sleep 30
-
-                            # Show running containers
-                            docker ps
-
-                            echo "=== Deployment Complete ==="
-                        '
-                    """
-                }
+                    echo "=== Smoke Test Passed ==="
+                '''
             }
         }
+    }
 
-        // ── Stage 7: Smoke Test ───────────────────────────────────
-        stage('✅ Smoke Test') {
-            steps {
-                echo '=== Running post-deployment smoke test ==='
-                sh """
-                    sleep 15
-
-                    # Test frontend
-                    FRONTEND_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" http://${EC2_HOST}/)
-                    echo "Frontend HTTP status: \$FRONTEND_STATUS"
-
-                    # Test backend health endpoint
-                    BACKEND_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" http://${EC2_HOST}:8080/api/employees/health)
-                    echo "Backend HTTP status: \$BACKEND_STATUS"
-
-                    # Test employees API
-                    API_RESPONSE=\$(curl -s http://${EC2_HOST}:8080/api/employees)
-                    echo "API response: \$API_RESPONSE"
-
-                    if [ "\$FRONTEND_STATUS" = "200" ] && [ "\$BACKEND_STATUS" = "200" ]; then
-                        echo "✅ All smoke tests PASSED!"
-                    else
-                        echo "❌ Smoke tests FAILED — Frontend: \$FRONTEND_STATUS, Backend: \$BACKEND_STATUS"
-                        exit 1
-                    fi
-                """
-            }
-        }
-
-    } // end stages
-
-    // ── Post-pipeline actions ────────────────────────────────────
     post {
 
         success {
             echo """
-            ╔══════════════════════════════════════════╗
-            ║   ✅ DEPLOYMENT SUCCESSFUL               ║
-            ║   Build #${env.BUILD_NUMBER}             ║
-            ║   Frontend:  http://\${EC2_HOST}         ║
-            ║   Backend:   http://\${EC2_HOST}:8080    ║
-            ╚══════════════════════════════════════════╝
+            ==========================================
+              CI/CD PIPELINE SUCCESSFUL
+              Build #${BUILD_NUMBER}
+
+              Frontend: http://EC2-PUBLIC-IP
+              Backend:  http://EC2-PUBLIC-IP:8080
+            ==========================================
             """
         }
 
         failure {
             echo """
-            ╔══════════════════════════════════════════╗
-            ║   ❌ PIPELINE FAILED — Build #${env.BUILD_NUMBER}
-            ║   Check logs above for details           ║
-            ╚══════════════════════════════════════════╝
+            ==========================================
+              CI/CD PIPELINE FAILED
+              Build #${BUILD_NUMBER}
+              Check the logs above.
+            ==========================================
             """
         }
 
         always {
-            // Clean workspace after build
-            cleanWs()
-
-            // Remove dangling Docker images on Jenkins agent
             sh 'docker image prune -f || true'
         }
     }
-
-} // end pipeline
+}

@@ -3,7 +3,7 @@ pipeline {
     agent any
 
     environment {
-        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
+        JAVA_HOME = '/usr/lib/jvm/java-21-openjdk-amd64'
         IMAGE_TAG = "${BUILD_NUMBER}"
     }
 

@@ -1,0 +1,85 @@
+version: '3.8'
+
+# ─── Employee Management System ───────────────────────────────────
+# 3-Tier Architecture: Frontend (Nginx) → Backend (Spring Boot) → DB (MySQL)
+# Team: Jesinder (DevOps) & Menaka (Java)
+# ──────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Tier 3: Database ────────────────────────────────────────────
+  database:
+    image: mysql:8.0
+    container_name: emp-database
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE:      ${DB_NAME:-empdb}
+      MYSQL_USER:          ${DB_USER:-empuser}
+      MYSQL_PASSWORD:      ${DB_PASSWORD:-emppassword}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - emp-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Tier 2: Backend (Spring Boot) ───────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: emp-backend:${IMAGE_TAG:-latest}
+    container_name: emp-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST:      database
+      DB_PORT:      3306
+      DB_NAME:      ${DB_NAME:-empdb}
+      DB_USER:      ${DB_USER:-root}
+      DB_PASSWORD:  ${DB_ROOT_PASSWORD:-rootpassword}
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8080:8080"
+    networks:
+      - emp-network
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/api/employees/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── Tier 1: Frontend (Nginx) ─────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: emp-frontend:${IMAGE_TAG:-latest}
+    container_name: emp-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    networks:
+      - emp-network
+    depends_on:
+      backend:
+        condition: service_healthy
+
+# ── Persistent Storage ────────────────────────────────────────────
+volumes:
+  mysql_data:
+    driver: local
+
+# ── Internal Network ──────────────────────────────────────────────
+networks:
+  emp-network:
+    driver: bridge
